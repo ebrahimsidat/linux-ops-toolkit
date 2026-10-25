@@ -1,0 +1,74 @@
+---
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BATS_VERSION: "1.11.1"
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Lint scripts
+        run: |
+          shellcheck --version
+          make lint
+
+  test-ubuntu:
+    name: Tests (Ubuntu)
+    runs-on: ubuntu-latest
+    needs: shellcheck
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install bats
+        uses: bats-core/bats-action@4.0.0
+        with:
+          bats-version: ${{ env.BATS_VERSION }}
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run tests
+        run: make test
+      - name: Verify make install
+        run: |
+          prefix="$(mktemp -d)"
+          make install PREFIX="$prefix"
+          "$prefix/bin/ops-triage" --top 3 >/dev/null || [ $? -eq 1 ]
+          "$prefix/bin/ops-check-certs" --help >/dev/null
+          make uninstall PREFIX="$prefix"
+
+  test-rhel:
+    name: Tests (Rocky Linux ${{ matrix.version }})
+    runs-on: ubuntu-latest
+    needs: shellcheck
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["8", "9"]
+    container:
+      image: rockylinux:${{ matrix.version }}
+    steps:
+      - name: Install dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            make openssl procps-ng iproute findutils tar gzip which hostname
+          curl -fsSL "https://github.com/bats-core/bats-core/archive/refs/tags/v${BATS_VERSION}.tar.gz" | tar -xz -C /tmp
+          "/tmp/bats-core-${BATS_VERSION}/install.sh" /usr/local
+      - uses: actions/checkout@v7
+      - name: Run tests
+        run: make test
